@@ -13,7 +13,7 @@ type LimitController interface {
 	Start()
 	// Acquire permission to perform certain things.
 	// The permission is granted according to the rate limit rule.
-	Acquire() bool
+	Acquire() (bool, uint)
 }
 
 // NoopControl does not perform any rate limit.
@@ -34,11 +34,11 @@ func (c *NoopControl) Start() {
 
 // Acquire permission from NoopControl.
 // Permission is granted immediately since it does not perform any rate limit.
-func (c *NoopControl) Acquire() bool {
+func (c *NoopControl) Acquire() (bool, uint) {
 	log.Debugf("NoopControl[%s]: Seeking permission.", c.Label)
 	log.Debugf("NoopControl[%s]: Granted permission.", c.Label)
 
-	return true
+	return true, 0
 }
 
 // BanControl bans all the request.
@@ -59,11 +59,11 @@ func (c *BanControl) Start() {
 
 // Acquire permission from BanControl.
 // Permission is never granted.
-func (c *BanControl) Acquire() bool {
+func (c *BanControl) Acquire() (bool, uint) {
 	log.Debugf("BanControl[%s]: Seeking permission.", c.Label)
 	log.Debugf("BanControl[%s]: No permission granted.", c.Label)
 
-	return false
+	return false, 0
 }
 
 // RPSControl provides requests per second rate limit control.
@@ -108,7 +108,7 @@ func (c *RPSControl) Start() {
 			}
 			c.seen.PushBack(time.Now().UnixNano())
 
-			c.readyChan <- 1
+			c.readyChan <- 2
 		}
 
 		log.Debugf("RPSControl[%s]: Deactivated.", c.Label)
@@ -117,13 +117,13 @@ func (c *RPSControl) Start() {
 
 // Acquire permission from RPSControl.
 // Permission is granted at a rate of N requests per second.
-func (c *RPSControl) Acquire() bool {
+func (c *RPSControl) Acquire() (bool, uint) {
 	log.Debugf("RPSControl[%s]: Seeking permission.", c.Label)
 	c.pendingChan <- 1
-	<-c.readyChan
+	res := <-c.readyChan
 	log.Debugf("RPSControl[%s]: Granted permission.", c.Label)
 
-	return true
+	return true, res
 }
 
 // RPMControl provides requests per minute rate limit control.
@@ -136,11 +136,12 @@ type RPMControl struct {
 	pendingChan chan uint
 	readyChan   chan uint
 	seen        *list.List
+	zone		*Zone
 }
 
 // NewRPMControl return a new RPMControl with the given label and rate.
-func NewRPMControl(label string, rate int) *RPMControl {
-	return &RPMControl{label, rate, make(chan uint), make(chan uint), list.New()}
+func NewRPMControl(label string, rate int, zone *Zone) *RPMControl {
+	return &RPMControl{label, rate, make(chan uint), make(chan uint), list.New(), zone}
 }
 
 // Start running RPMControl.
@@ -160,16 +161,27 @@ func (c *RPMControl) Start() {
 				secondElapsed := milliElapsed / 1000
 				log.Debugf("RPMControl[%s]: Elapsed %ds since first request.", c.Label, secondElapsed)
 
-				if waitTime := 60 - secondElapsed; waitTime > 0 {
-					log.Infof("RPMControl[%s]: Waiting for %ds.", c.Label, waitTime)
-					time.Sleep(time.Duration(waitTime) * time.Second)
+				if c.zone.DenyAtLimit == true {
+					c.readyChan <- 1
 				}
 
-				c.seen.Remove(front)
+				if waitTime := 60 - secondElapsed; c.zone.DenyAtLimit == false && waitTime > 0 {
+					log.Infof("RPMControl[%s]: Waiting for %ds.", c.Label, waitTime)
+					time.Sleep(time.Duration(waitTime) * time.Second)
+					entry := c.seen.PushBack(time.Now().UnixNano())
+					time.AfterFunc(time.Second * 60, func() {
+						c.seen.Remove(entry)
+					})
+					c.readyChan <- 2
+				}
+			} else {
+				entry := c.seen.PushBack(time.Now().UnixNano())
+				time.AfterFunc(time.Second * 60, func() {
+					c.seen.Remove(entry)
+				})
+				
+				c.readyChan <- 2
 			}
-			c.seen.PushBack(time.Now().UnixNano())
-
-			c.readyChan <- 1
 		}
 
 		log.Debugf("RPMControl[%s]: Deactivated.", c.Label)
@@ -178,11 +190,11 @@ func (c *RPMControl) Start() {
 
 // Acquire permission from RPMControl.
 // Permission is granted at a rate of N requests per minute.
-func (c *RPMControl) Acquire() bool {
+func (c *RPMControl) Acquire() (bool, uint) {
 	log.Debugf("RPMControl[%s]: Seeking permission.", c.Label)
 	c.pendingChan <- 1
-	<-c.readyChan
+	res := <-c.readyChan
 	log.Debugf("RPMControl[%s]: Granted permission.", c.Label)
 
-	return true
+	return true, res
 }

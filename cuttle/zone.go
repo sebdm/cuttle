@@ -25,6 +25,8 @@ type Zone struct {
 	// Shared specifies whether the rate limit is shared among all location(s) in the Zone.
 	Shared bool
 
+	DenyAtLimit bool
+
 	// Control specifies which rate limit controller is used.
 	Control string
 	// Rate specifies the rate of the rate limit controller.
@@ -34,9 +36,9 @@ type Zone struct {
 }
 
 // NewZone returns a new Zone given the configurations.
-func NewZone(host string, path string, limitby string, shared bool, control string, rate int) *Zone {
+func NewZone(host string, path string, limitby string, shared bool, denyAtLimit bool, control string, rate int) *Zone {
 	return &Zone{
-		host, path, limitby, shared, control, rate,
+		host, path, limitby, shared, denyAtLimit, control, rate,
 		make(map[string]LimitController),
 	}
 }
@@ -101,7 +103,7 @@ func (z *Zone) GetController(host string, path string) LimitController {
 		case "rps":
 			controller = NewRPSControl(key, z.Rate)
 		case "rpm":
-			controller = NewRPMControl(key, z.Rate)
+			controller = NewRPMControl(key, z.Rate, z)
 		case "noop":
 			controller = NewNoopControl(key)
 		case "ban":

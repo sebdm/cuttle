@@ -30,7 +30,9 @@ func main() {
 		log.SetLevel(log.InfoLevel)
 	}
 
+	var port string
 	filename := "./cuttle.yml"
+	flag.StringVar(&port, "p", port, "The port to be used.")
 	flag.StringVar(&filename, "f", filename, "Configuration file to be loaded.")
 	flag.Parse()
 
@@ -40,10 +42,14 @@ func main() {
 		log.Fatal(err)
 	}
 
-	cfg := Config{Addr: ":3128", CACert: "", CAKey: "", TLSVerify: true}
+	cfg := Config{Addr: port, CACert: "", CAKey: "", TLSVerify: true}
 	if err := yaml.Unmarshal(bytes, &cfg); err != nil {
 		log.Errorf("Malformed YAML in %s.", filename)
 		log.Fatal(err)
+	}
+
+	if port != "" {
+		cfg.Addr = port
 	}
 
 	zones := make([]cuttle.Zone, len(cfg.Zones))
@@ -59,7 +65,7 @@ func main() {
 		log.Debugf("ZoneConfig: host - %s, path - %s, limitby - %s, shared - %t, control - %s, rate - %d",
 			c.Host, c.Path, c.LimitBy, c.Shared, c.Control, c.Rate)
 
-		zones[i] = *cuttle.NewZone(c.Host, c.Path, c.LimitBy, c.Shared, c.Control, c.Rate)
+		zones[i] = *cuttle.NewZone(c.Host, c.Path, c.LimitBy, c.Shared, c.DenyAtLimit, c.Control, c.Rate)
 	}
 
 	// Config CA Cert.
@@ -98,9 +104,10 @@ func main() {
 			}
 
 			acquired := false
+			var res uint = 0
 			if zone != nil {
 				// Acquire permission to forward request to upstream server.
-				acquired = zone.GetController(r.URL.Host, r.URL.Path).Acquire()
+				acquired, res = zone.GetController(r.URL.Host, r.URL.Path).Acquire()
 			} else {
 				// No rate limit applied.
 				log.Warnf("Main: No zone is applied to %s", r.URL)
@@ -109,6 +116,10 @@ func main() {
 			// Permission is not granted.
 			if !acquired {
 				return r, goproxy.NewResponse(r, goproxy.ContentTypeText, http.StatusForbidden, "Forbidden")
+			}
+
+			if res == 1 {
+				return r, goproxy.NewResponse(r, goproxy.ContentTypeText, http.StatusTooManyRequests, "")
 			}
 
 			// Permission granted, forward request.
@@ -134,6 +145,7 @@ type ZoneConfig struct {
 	Path    string // Optional, default "/"
 	LimitBy string // Optional, default "host"
 	Shared  bool   // Optional, default "false"
+	DenyAtLimit bool // Optional, default false
 	Control string
 	Rate    int
 }
